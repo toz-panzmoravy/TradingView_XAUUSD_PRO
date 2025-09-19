@@ -1,0 +1,712 @@
+//@version=6
+indicator("Forexoid XAUUSD Adaptive - Gold Market Specialist", shorttitle="XAUUSD Adaptive", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// ============================================================================
+// INPUT PARAMETERS - XAUUSD SPECIALIZED
+// ============================================================================
+
+// Main Settings
+group_main = "🎯 Main Settings"
+enable_trading = input.bool(true, "Enable Trading System", group=group_main)
+enable_alerts = input.bool(true, "Enable Alerts", group=group_main)
+show_background = input.bool(true, "Show Background Colors", group=group_main)
+show_position_info = input.bool(true, "Show Position Information", group=group_main)
+
+// XAUUSD Specific Settings
+group_xauusd = "🥇 XAUUSD Specific"
+enable_session_optimization = input.bool(true, "Enable Session Optimization", group=group_xauusd)
+enable_news_filter = input.bool(true, "Enable News Filter", group=group_xauusd)
+enable_volatility_filter = input.bool(true, "Enable Volatility Filter", group=group_xauusd)
+enable_multi_timeframe = input.bool(true, "Enable Multi-Timeframe", group=group_xauusd)
+
+// Adaptive Parameters - OPTIMALIZOVÁNO PRO XAUUSD
+group_adaptive = "🧠 Adaptive Parameters (Gold Optimized)"
+enable_adaptive_system = input.bool(true, "Enable Adaptive System", group=group_adaptive)
+volatility_threshold_high = input.float(2.0, "High Volatility Threshold", group=group_adaptive)
+volatility_threshold_low = input.float(1.0, "Low Volatility Threshold", group=group_adaptive)
+volume_threshold_high = input.float(2.5, "High Volume Threshold", group=group_adaptive)
+volume_threshold_low = input.float(0.8, "Low Volume Threshold", group=group_adaptive)
+
+// Risk Management - OPTIMALIZOVÁNO PRO ZLATO
+group_risk = "🛡️ Risk Management (Gold Optimized)"
+max_risk_per_trade = input.float(1.5, "Max Risk Per Trade (%)", minval=0.1, maxval=5.0, step=0.1, group=group_risk)
+atr_multiplier = input.float(2.2, "ATR Multiplier for Stops", minval=1.0, maxval=5.0, step=0.1, group=group_risk)
+profit_target_ratio = input.float(2.5, "Profit Target Ratio", minval=1.0, maxval=5.0, step=0.1, group=group_risk)
+trailing_stop_enabled = input.bool(true, "Enable Trailing Stop", group=group_risk)
+trailing_stop_atr = input.float(1.5, "Trailing Stop ATR Multiplier", minval=0.5, maxval=3.0, step=0.1, group=group_risk)
+
+// Visual Settings
+group_visual = "🎨 Visual Settings"
+show_trend_line = input.bool(true, "Show Trend Line", group=group_visual)
+show_support_resistance = input.bool(true, "Show S/R Levels", group=group_visual)
+signal_size = input.string("Medium", "Signal Size", options=["Small", "Medium", "Large"], group=group_visual)
+
+// ============================================================================
+// CORE FUNCTIONS - XAUUSD SPECIALIZED
+// ============================================================================
+
+// Enhanced ATR Calculation for XAUUSD
+f_atr_xauusd(length) =>
+    atr_value = ta.atr(length)
+    atr_value
+
+// XAUUSD-specific Adaptive Moving Average
+f_ama_xauusd(src, length, fast_sc, slow_sc) =>
+    direction = math.abs(src - src[length])
+    volatility = math.sum(math.abs(src - src[1]), length)
+    efficiency_ratio = volatility != 0 ? direction / volatility : 0
+    fast_alpha = 2 / (fast_sc + 1)
+    slow_alpha = 2 / (slow_sc + 1)
+    alpha = math.pow(efficiency_ratio * (fast_alpha - slow_alpha) + slow_alpha, 2)
+    var float ama = na
+    ama := na(ama) ? src : alpha * src + (1 - alpha) * ama
+    ama
+
+// Market Structure Analysis for XAUUSD
+f_market_structure_xauusd(price_high, price_low, price_close, length) =>
+    var float swing_high = na
+    var float swing_low = na
+    var int swing_high_bar = na
+    var int swing_low_bar = na
+    
+    // XAUUSD-specific swing detection (delší perioda kvůli volatilitě)
+    if price_high > price_high[1] and price_high > price_high[2] and price_high > price_high[3] and price_high > price_high[4]
+        swing_high := price_high
+        swing_high_bar := bar_index
+    
+    if price_low < price_low[1] and price_low < price_low[2] and price_low < price_low[3] and price_low < price_low[4]
+        swing_low := price_low
+        swing_low_bar := bar_index
+    
+    // XAUUSD-specific structure analysis
+    structure_bullish = swing_low > swing_low[1] and swing_high > swing_high[1]
+    structure_bearish = swing_high < swing_high[1] and swing_low < swing_low[1]
+    
+    [structure_bullish, structure_bearish, swing_high, swing_low]
+
+// Volume Profile Analysis for XAUUSD
+f_volume_profile_xauusd(price_high, price_low, price_close, price_volume, length) =>
+    price_range = price_high - price_low
+    volume_weighted_price = price_volume * (price_high + price_low + price_close) / 3
+    vwap_value = math.sum(volume_weighted_price, length) / math.sum(price_volume, length)
+    vwap_value
+
+// Momentum Oscillator for XAUUSD
+f_momentum_oscillator_xauusd(src, length) =>
+    momentum = src - src[length]
+    momentum_sma = ta.sma(momentum, length)
+    momentum_ratio = momentum_sma != 0 ? momentum / momentum_sma : 0
+    momentum_ratio
+
+// RSI Calculation for XAUUSD
+f_rsi_xauusd(src, length) =>
+    rsi_value = ta.rsi(src, length)
+    rsi_value
+
+// Bollinger Bands for XAUUSD
+f_bollinger_bands(src, length, mult) =>
+    basis = ta.sma(src, length)
+    dev = mult * ta.stdev(src, length)
+    upper = basis + dev
+    lower = basis - dev
+    [upper, basis, lower]
+
+// Session Detection for XAUUSD
+f_detect_session_xauusd() =>
+    current_hour = hour(time, "UTC")
+    
+    if current_hour >= 0 and current_hour < 8
+        "ASIAN"
+    else if current_hour >= 8 and current_hour < 13
+        "EUROPEAN"
+    else if current_hour >= 13 and current_hour < 16
+        "OVERLAP"
+    else if current_hour >= 16 and current_hour < 21
+        "AMERICAN"
+    else
+        "ASIAN"
+
+// Market Regime Detection for XAUUSD
+f_detect_market_regime_xauusd(atr_14_val, atr_50_val) =>
+    // Trend detection
+    trend_strength = math.abs(close - close[20]) / close[20]
+    
+    // Volatility detection (higher thresholds for gold)
+    vol_strength = atr_14_val / atr_50_val
+    
+    // Volume detection
+    vol_ratio = volume / ta.sma(volume, 20)
+    
+    if trend_strength > 0.015 and vol_strength > 1.5  // Higher thresholds for gold
+        "TRENDING"
+    else if vol_strength < 1.0 and vol_ratio < 0.8
+        "RANGING"
+    else if vol_strength > 2.0 and vol_ratio > 2.5  // Higher thresholds for gold
+        "BREAKOUT"
+    else
+        "NEUTRAL"
+
+// News Event Detection for XAUUSD
+f_detect_news_event_xauusd(volatility_ratio_val) =>
+    // Volatility spike (higher threshold for gold)
+    vol_spike = volatility_ratio_val > 3.0  // Higher than forex
+    
+    // Volume spike
+    volume_spike = volume > ta.sma(volume, 20) * 4.0  // Higher than forex
+    
+    // Price spike (higher threshold for gold)
+    price_spike = math.abs(close - close[1]) / close[1] > 0.005  // Higher than forex
+    
+    vol_spike or volume_spike or price_spike
+
+// Adaptive Parameter Adjustment for XAUUSD
+f_get_adaptive_params_xauusd(atr_14_val, atr_50_val, volatility_ratio_val) =>
+    current_session = f_detect_session_xauusd()
+    market_regime = f_detect_market_regime_xauusd(atr_14_val, atr_50_val)
+    news_event = f_detect_news_event_xauusd(volatility_ratio_val)
+    
+    // Base parameters (optimized for gold)
+    trend_sens = 0.3  // Lower than forex
+    momentum_sens = 0.4  // Lower than forex
+    profit_target = 2.5  // Higher than forex
+    risk_percent = 1.5  // Lower than forex
+    signal_threshold = 6.5  // Higher than forex
+    
+    // Session-based adjustments for gold
+    if current_session == "ASIAN"
+        trend_sens := 0.4
+        momentum_sens := 0.5
+        profit_target := 2.0
+        risk_percent := 1.0
+        signal_threshold := 7.0
+    else if current_session == "EUROPEAN"
+        trend_sens := 0.3
+        momentum_sens := 0.4
+        profit_target := 2.5
+        risk_percent := 1.5
+        signal_threshold := 6.5
+    else if current_session == "AMERICAN"
+        trend_sens := 0.2
+        momentum_sens := 0.3
+        profit_target := 3.0
+        risk_percent := 2.0
+        signal_threshold := 6.0
+    else if current_session == "OVERLAP"
+        trend_sens := 0.1
+        momentum_sens := 0.2
+        profit_target := 4.0
+        risk_percent := 2.5
+        signal_threshold := 5.5
+    
+    // Market regime adjustments for gold
+    if market_regime == "TRENDING"
+        trend_sens := trend_sens * 0.7
+        momentum_sens := momentum_sens * 0.7
+        profit_target := profit_target * 1.3
+    else if market_regime == "RANGING"
+        trend_sens := trend_sens * 1.3
+        momentum_sens := momentum_sens * 1.3
+        profit_target := profit_target * 0.7
+    else if market_regime == "BREAKOUT"
+        trend_sens := trend_sens * 0.5
+        momentum_sens := momentum_sens * 0.5
+        profit_target := profit_target * 1.5
+    
+    // News event adjustments for gold
+    if news_event
+        signal_threshold := signal_threshold * 1.8  // Higher than forex
+        risk_percent := risk_percent * 0.3  // Lower than forex
+    
+    [trend_sens, momentum_sens, profit_target, risk_percent, signal_threshold]
+
+// ============================================================================
+// POSITION MANAGEMENT
+// ============================================================================
+
+// Position State Variables
+var string position_type = "NONE"  // "LONG", "SHORT", "NONE"
+var float entry_price = na
+var float stop_loss = na
+var float take_profit = na
+var float trailing_stop = na
+var int entry_bar = na
+var float max_profit = na
+var float max_loss = na
+var string current_strategy = "NONE"
+
+// ============================================================================
+// INDICATOR CALCULATIONS - XAUUSD OPTIMIZED
+// ============================================================================
+
+// Basic Data
+atr_14 = f_atr_xauusd(14)
+atr_21 = f_atr_xauusd(21)
+atr_50 = f_atr_xauusd(50)
+
+// XAUUSD-specific Adaptive Moving Averages (optimized for gold)
+ama_fast = f_ama_xauusd(close, 12, 2, 30)  // Faster for gold
+ama_slow = f_ama_xauusd(close, 24, 2, 30)  // Optimized
+ama_trend = f_ama_xauusd(close, 48, 2, 30)  // Slower trend
+
+// Multi-timeframe Data
+h1_close = request.security(syminfo.tickerid, "60", close)
+m15_close = request.security(syminfo.tickerid, "15", close)
+
+// Multi-timeframe structure - simplified approach for gold
+m15_structure_bullish = request.security(syminfo.tickerid, "15", close > ta.sma(close, 24))  // Longer period for gold
+m15_structure_bearish = request.security(syminfo.tickerid, "15", close < ta.sma(close, 24))
+
+// Market Structure
+[structure_bullish, structure_bearish, swing_high, swing_low] = f_market_structure_xauusd(high, low, close, 4)  // Longer period for gold
+
+// Volume Analysis
+vwap_current = f_volume_profile_xauusd(high, low, close, volume, 24)  // Longer period for gold
+vwap_h1 = request.security(syminfo.tickerid, "60", f_volume_profile_xauusd(high, low, close, volume, 24))
+
+// Momentum Analysis
+momentum_current = f_momentum_oscillator_xauusd(close, 16)  // Longer period for gold
+momentum_h1 = request.security(syminfo.tickerid, "60", f_momentum_oscillator_xauusd(close, 16))
+
+// RSI Analysis
+rsi_current = f_rsi_xauusd(close, 14)
+rsi_h1 = request.security(syminfo.tickerid, "60", f_rsi_xauusd(close, 14))
+
+// Bollinger Bands Analysis
+[bb_upper, bb_middle, bb_lower] = f_bollinger_bands(close, 20, 2.0)
+
+// Volatility Analysis
+volatility_ratio = atr_14 / atr_50
+volatility_expanding = volatility_ratio > volatility_threshold_high
+volatility_contracting = volatility_ratio < volatility_threshold_low
+
+// Trend Analysis
+trend_bullish_h1 = h1_close > h1_close[1] and h1_close[1] > h1_close[2]
+trend_bearish_h1 = h1_close < h1_close[1] and h1_close[1] < h1_close[2]
+trend_neutral_h1 = not trend_bullish_h1 and not trend_bearish_h1
+
+// Price Action Analysis
+price_above_vwap = close > vwap_current
+price_below_vwap = close < vwap_current
+price_near_vwap = math.abs(close - vwap_current) / close < 0.002  // Higher threshold for gold
+
+// Bollinger Bands Analysis
+price_above_bb = close > bb_upper
+price_below_bb = close < bb_lower
+price_in_bb = close >= bb_lower and close <= bb_upper
+
+// RSI Analysis
+rsi_overbought = rsi_current > 70
+rsi_oversold = rsi_current < 30
+rsi_neutral = rsi_current >= 30 and rsi_current <= 70
+
+// Adaptive Parameters
+[adaptive_trend_sens, adaptive_momentum_sens, adaptive_profit_target, adaptive_risk, adaptive_signal_threshold] = f_get_adaptive_params_xauusd(atr_14, atr_50, volatility_ratio)
+
+// Session and Regime Detection
+current_session = f_detect_session_xauusd()
+market_regime = f_detect_market_regime_xauusd(atr_14, atr_50)
+news_event = f_detect_news_event_xauusd(volatility_ratio)
+
+// ============================================================================
+// SIGNAL GENERATION - XAUUSD ADAPTIVE
+// ============================================================================
+
+// Long Signal Conditions - Adaptive for Gold
+long_trend_condition = trend_bullish_h1 and close > ama_fast and ama_fast > ama_slow
+long_momentum_condition = momentum_current > adaptive_momentum_sens and momentum_h1 > 0
+long_structure_condition = structure_bullish and close > swing_low
+long_volume_condition = volume > ta.sma(volume, 24) * 1.2  // Higher threshold for gold
+long_volatility_condition = not volatility_contracting
+long_price_condition = price_above_vwap and close > close[1]
+long_multi_tf_condition = enable_multi_timeframe ? m15_structure_bullish : true
+long_news_condition = enable_news_filter ? not news_event : true
+long_rsi_condition = not rsi_overbought  // RSI filter for gold
+long_bb_condition = not price_above_bb  // Bollinger Bands filter
+
+// Short Signal Conditions - Adaptive for Gold
+short_trend_condition = trend_bearish_h1 and close < ama_fast and ama_fast < ama_slow
+short_momentum_condition = momentum_current < -adaptive_momentum_sens and momentum_h1 < 0
+short_structure_condition = structure_bearish and close < swing_high
+short_volume_condition = volume > ta.sma(volume, 24) * 1.2  // Higher threshold for gold
+short_volatility_condition = not volatility_contracting
+short_price_condition = price_below_vwap and close < close[1]
+short_multi_tf_condition = enable_multi_timeframe ? m15_structure_bearish : true
+short_news_condition = enable_news_filter ? not news_event : true
+short_rsi_condition = not rsi_oversold  // RSI filter for gold
+short_bb_condition = not price_below_bb  // Bollinger Bands filter
+
+// Signal Strength Calculation - Adaptive for Gold
+long_strength = 0.0
+short_strength = 0.0
+
+if long_trend_condition
+    long_strength += 2.5
+if long_momentum_condition
+    long_strength += 2.0
+if long_structure_condition
+    long_strength += 1.5
+if long_volume_condition
+    long_strength += 1.0
+if long_volatility_condition
+    long_strength += 1.0
+if long_price_condition
+    long_strength += 1.0
+if long_multi_tf_condition
+    long_strength += 1.0
+if long_news_condition
+    long_strength += 0.5
+if long_rsi_condition
+    long_strength += 0.5
+if long_bb_condition
+    long_strength += 0.5
+
+if short_trend_condition
+    short_strength += 2.5
+if short_momentum_condition
+    short_strength += 2.0
+if short_structure_condition
+    short_strength += 1.5
+if short_volume_condition
+    short_strength += 1.0
+if short_volatility_condition
+    short_strength += 1.0
+if short_price_condition
+    short_strength += 1.0
+if short_multi_tf_condition
+    short_strength += 1.0
+if short_news_condition
+    short_strength += 0.5
+if short_rsi_condition
+    short_strength += 0.5
+if short_bb_condition
+    short_strength += 0.5
+
+// Entry Signals - Adaptive Threshold for Gold
+long_entry_signal = enable_trading and position_type == "NONE" and long_strength >= adaptive_signal_threshold and long_strength > short_strength
+short_entry_signal = enable_trading and position_type == "NONE" and short_strength >= adaptive_signal_threshold and short_strength > long_strength
+
+// Signal Filtering - Adaptive Cooldown for Gold
+var int last_signal_bar = 0
+signal_cooldown = news_event ? 15 : (market_regime == "BREAKOUT" ? 3 : 8)  // Longer cooldown for gold
+
+if long_entry_signal or short_entry_signal
+    if bar_index - last_signal_bar > signal_cooldown
+        last_signal_bar := bar_index
+    else
+        long_entry_signal := false
+        short_entry_signal := false
+
+// ============================================================================
+// POSITION MANAGEMENT LOGIC - ADAPTIVE FOR GOLD
+// ============================================================================
+
+// Calculate Stop Loss and Take Profit - Adaptive for Gold
+stop_loss_long = low - atr_14 * atr_multiplier
+stop_loss_short = high + atr_14 * atr_multiplier
+
+take_profit_long = close + (close - stop_loss_long) * adaptive_profit_target
+take_profit_short = close - (stop_loss_short - close) * adaptive_profit_target
+
+// Open Positions
+if long_entry_signal
+    position_type := "LONG"
+    entry_price := close
+    stop_loss := stop_loss_long
+    take_profit := take_profit_long
+    trailing_stop := stop_loss_long
+    entry_bar := bar_index
+    max_profit := 0
+    max_loss := 0
+    current_strategy := current_session
+
+if short_entry_signal
+    position_type := "SHORT"
+    entry_price := close
+    stop_loss := stop_loss_short
+    take_profit := take_profit_short
+    trailing_stop := stop_loss_short
+    entry_bar := bar_index
+    max_profit := 0
+    max_loss := 0
+    current_strategy := current_session
+
+// Position Management - Adaptive for Gold
+// Calculate current profit/loss for both positions
+current_profit_long = position_type == "LONG" ? (close - entry_price) : 0
+current_profit_short = position_type == "SHORT" ? (entry_price - close) : 0
+current_profit = position_type == "LONG" ? current_profit_long : current_profit_short
+current_loss_long = position_type == "LONG" ? (entry_price - close) : 0
+current_loss_short = position_type == "SHORT" ? (close - entry_price) : 0
+current_loss = position_type == "LONG" ? current_loss_long : current_loss_short
+
+if position_type == "LONG"
+    // Update max profit/loss
+    
+    if na(max_profit) or current_profit > max_profit
+        max_profit := current_profit
+    
+    if na(max_loss) or current_loss > max_loss
+        max_loss := current_loss
+    
+    // Adaptive Trailing Stop Logic for Gold
+    if trailing_stop_enabled and current_profit > 0
+        new_trailing_stop = close - atr_14 * trailing_stop_atr
+        if new_trailing_stop > trailing_stop
+            trailing_stop := new_trailing_stop
+    
+    // Adaptive Exit Conditions for LONG - Gold optimized
+    exit_long_stop = close <= trailing_stop
+    exit_long_profit = close >= take_profit
+    exit_long_structure = structure_bearish and close < swing_low
+    exit_long_momentum = momentum_current < -adaptive_momentum_sens * 0.7  // More sensitive for gold
+    exit_long_news = news_event and current_profit < 0
+    exit_long_rsi = rsi_overbought and current_profit > 0  // Exit on RSI overbought
+    
+    if exit_long_stop or exit_long_profit or exit_long_structure or exit_long_momentum or exit_long_news or exit_long_rsi
+        position_type := "NONE"
+        entry_price := na
+        stop_loss := na
+        take_profit := na
+        trailing_stop := na
+        entry_bar := na
+        max_profit := na
+        max_loss := na
+        current_strategy := "NONE"
+
+// ============================================================================
+// VISUAL ELEMENTS - XAUUSD THEMED
+// ============================================================================
+
+// Background Colors - XAUUSD themed
+bg_color = color.new(color.white, 95)
+bg_long = color.new(color.green, 90)
+bg_short = color.new(color.red, 90)
+bg_position = color.new(color.blue, 85)
+bg_news = color.new(color.orange, 80)
+bg_gold = color.new(color.yellow, 85)  // Gold theme
+
+// Background coloring - Adaptive
+bgcolor(long_entry_signal and show_background ? bg_long : short_entry_signal and show_background ? bg_short : position_type != "NONE" and show_background ? bg_position : news_event and show_background ? bg_news : na, title="Signal Background")
+
+// Trend Line - XAUUSD optimized
+trend_line_color = close > ama_trend ? color.green : color.red
+plot(ama_trend, color=trend_line_color, linewidth=2, title="XAUUSD Trend Line")
+
+// Support and Resistance Levels
+plot(show_support_resistance ? swing_high : na, color=color.red, style=plot.style_linebr, linewidth=1, title="Resistance")
+plot(show_support_resistance ? swing_low : na, color=color.green, style=plot.style_linebr, linewidth=1, title="Support")
+
+// VWAP
+plot(vwap_current, color=color.blue, linewidth=1, title="XAUUSD VWAP")
+
+// Bollinger Bands
+plot(bb_upper, color=color.gray, linewidth=1, title="BB Upper")
+plot(bb_middle, color=color.gray, linewidth=1, title="BB Middle")
+plot(bb_lower, color=color.gray, linewidth=1, title="BB Lower")
+
+// Position Lines - Adaptive
+plot(position_type == "LONG" ? stop_loss : na, color=color.red, style=plot.style_linebr, linewidth=2, title="Long Stop Loss")
+plot(position_type == "LONG" ? take_profit : na, color=color.green, style=plot.style_linebr, linewidth=2, title="Long Take Profit")
+plot(position_type == "SHORT" ? stop_loss : na, color=color.red, style=plot.style_linebr, linewidth=2, title="Short Stop Loss")
+plot(position_type == "SHORT" ? take_profit : na, color=color.green, style=plot.style_linebr, linewidth=2, title="Short Take Profit")
+
+// ============================================================================
+// SIGNAL LABELS AND ARROWS - XAUUSD ADAPTIVE
+// ============================================================================
+
+// Signal Size Configuration
+label_size = signal_size == "Small" ? size.small : signal_size == "Medium" ? size.normal : size.large
+
+// Entry Signals - XAUUSD Adaptive
+if long_entry_signal
+    label.new(bar_index, low - atr_14, "🥇 XAUUSD LONG\nSession: " + current_session + "\nRegime: " + market_regime + "\nEntry: " + str.tostring(close, "#.##") + "\nSL: " + str.tostring(stop_loss_long, "#.##") + "\nTP: " + str.tostring(take_profit_long, "#.##") + "\nStrength: " + str.tostring(long_strength, "#.#"), 
+              color=color.green, textcolor=color.white, style=label.style_label_up, size=label_size)
+    
+    if enable_alerts
+        alert("🥇 XAUUSD LONG - Session: " + current_session + " | Regime: " + market_regime + " | Entry: " + str.tostring(close, "#.##"), alert.freq_once_per_bar)
+
+if short_entry_signal
+    label.new(bar_index, high + atr_14, "🥇 XAUUSD SHORT\nSession: " + current_session + "\nRegime: " + market_regime + "\nEntry: " + str.tostring(close, "#.##") + "\nSL: " + str.tostring(stop_loss_short, "#.##") + "\nTP: " + str.tostring(take_profit_short, "#.##") + "\nStrength: " + str.tostring(short_strength, "#.#"), 
+              color=color.red, textcolor=color.white, style=label.style_label_down, size=label_size)
+    
+    if enable_alerts
+        alert("🥇 XAUUSD SHORT - Session: " + current_session + " | Regime: " + market_regime + " | Entry: " + str.tostring(close, "#.##"), alert.freq_once_per_bar)
+
+// Exit Signals - XAUUSD Adaptive
+if position_type == "LONG" and (close <= trailing_stop or close >= take_profit or (structure_bearish and close < swing_low) or momentum_current < -adaptive_momentum_sens * 0.7 or (news_event and current_profit_long < 0) or (rsi_overbought and current_profit_long > 0))
+    exit_reason = close <= trailing_stop ? "Stop Loss" : close >= take_profit ? "Take Profit" : (structure_bearish and close < swing_low) ? "Structure Change" : momentum_current < -adaptive_momentum_sens * 0.7 ? "Momentum Change" : news_event and current_profit_long < 0 ? "News Event" : "RSI Overbought"
+    label.new(bar_index, high + atr_14, "🔴 CLOSE XAUUSD LONG\nExit: " + str.tostring(close, "#.##") + "\nReason: " + exit_reason + "\nP&L: " + str.tostring((close - entry_price) * 100, "#") + " USD", 
+              color=color.orange, textcolor=color.white, style=label.style_label_down, size=label_size)
+    
+    if enable_alerts
+        alert("🔴 CLOSE XAUUSD LONG - Exit: " + str.tostring(close, "#.##") + " | Reason: " + exit_reason, alert.freq_once_per_bar)
+
+if position_type == "SHORT" and (close >= trailing_stop or close <= take_profit or (structure_bullish and close > swing_high) or momentum_current > adaptive_momentum_sens * 0.7 or (news_event and current_profit_short < 0) or (rsi_oversold and current_profit_short > 0))
+    exit_reason = close >= trailing_stop ? "Stop Loss" : close <= take_profit ? "Take Profit" : (structure_bullish and close > swing_high) ? "Structure Change" : momentum_current > adaptive_momentum_sens * 0.7 ? "Momentum Change" : news_event and current_profit_short < 0 ? "News Event" : "RSI Oversold"
+    label.new(bar_index, low - atr_14, "🟢 CLOSE XAUUSD SHORT\nExit: " + str.tostring(close, "#.##") + "\nReason: " + exit_reason + "\nP&L: " + str.tostring((entry_price - close) * 100, "#") + " USD", 
+              color=color.orange, textcolor=color.white, style=label.style_label_up, size=label_size)
+    
+    if enable_alerts
+        alert("🟢 CLOSE XAUUSD SHORT - Exit: " + str.tostring(close, "#.##") + " | Reason: " + exit_reason, alert.freq_once_per_bar)
+
+// ============================================================================
+// PLOT SHAPES FOR ADDITIONAL VISUAL CUES - XAUUSD ADAPTIVE
+// ============================================================================
+
+// Plot shapes for entry signals
+plotshape(long_entry_signal, style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small, title="XAUUSD Long Entry")
+plotshape(short_entry_signal, style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small, title="XAUUSD Short Entry")
+
+// Plot shapes for exit signals
+plotshape(position_type == "LONG" and (close <= trailing_stop or close >= take_profit or (structure_bearish and close < swing_low) or momentum_current < -adaptive_momentum_sens * 0.7 or (news_event and current_profit_long < 0) or (rsi_overbought and current_profit_long > 0)), style=shape.xcross, location=location.abovebar, color=color.orange, size=size.small, title="Long Exit")
+plotshape(position_type == "SHORT" and (close >= trailing_stop or close <= take_profit or (structure_bullish and close > swing_high) or momentum_current > adaptive_momentum_sens * 0.7 or (news_event and current_profit_short < 0) or (rsi_oversold and current_profit_short > 0)), style=shape.xcross, location=location.belowbar, color=color.orange, size=size.small, title="Short Exit")
+
+// Plot shapes for volatility changes
+plotshape(volatility_expanding, style=shape.circle, location=location.top, color=color.orange, size=size.tiny, title="Volatility Expanding")
+plotshape(volatility_contracting, style=shape.circle, location=location.bottom, color=color.blue, size=size.tiny, title="Volatility Contracting")
+
+// Plot shapes for news events
+plotshape(news_event, style=shape.diamond, location=location.top, color=color.red, size=size.small, title="News Event")
+
+// Plot shapes for session changes
+plotshape(current_session != current_session[1], style=shape.square, location=location.bottom, color=color.yellow, size=size.tiny, title="Session Change")
+
+// Plot shapes for RSI levels
+plotshape(rsi_overbought, style=shape.circle, location=location.top, color=color.red, size=size.tiny, title="RSI Overbought")
+plotshape(rsi_oversold, style=shape.circle, location=location.bottom, color=color.green, size=size.tiny, title="RSI Oversold")
+
+if position_type == "SHORT"
+    // Update max profit/loss
+    
+    if na(max_profit) or current_profit > max_profit
+        max_profit := current_profit
+    
+    if na(max_loss) or current_loss > max_loss
+        max_loss := current_loss
+    
+    // Adaptive Trailing Stop Logic for Gold
+    if trailing_stop_enabled and current_profit > 0
+        new_trailing_stop = close + atr_14 * trailing_stop_atr
+        if new_trailing_stop < trailing_stop
+            trailing_stop := new_trailing_stop
+    
+    // Adaptive Exit Conditions for SHORT - Gold optimized
+    exit_short_stop = close >= trailing_stop
+    exit_short_profit = close <= take_profit
+    exit_short_structure = structure_bullish and close > swing_high
+    exit_short_momentum = momentum_current > adaptive_momentum_sens * 0.7  // More sensitive for gold
+    exit_short_news = news_event and current_profit < 0
+    exit_short_rsi = rsi_oversold and current_profit > 0  // Exit on RSI oversold
+    
+    if exit_short_stop or exit_short_profit or exit_short_structure or exit_short_momentum or exit_short_news or exit_short_rsi
+        position_type := "NONE"
+        entry_price := na
+        stop_loss := na
+        take_profit := na
+        trailing_stop := na
+        entry_bar := na
+        max_profit := na
+        max_loss := na
+        current_strategy := "NONE"
+
+// ============================================================================
+// VISUAL ELEMENTS - XAUUSD THEMED
+// ============================================================================
+
+// Background Colors - XAUUSD themed
+bg_color = color.new(color.white, 95)
+bg_long = color.new(color.green, 90)
+bg_short = color.new(color.red, 90)
+bg_position = color.new(color.blue, 85)
+bg_news = color.new(color.orange, 80)
+bg_gold = color.new(color.yellow, 85)  // Gold theme
+
+// Background coloring - Adaptive
+bgcolor(long_entry_signal and show_background ? bg_long : short_entry_signal and show_background ? bg_short : position_type != "NONE" and show_background ? bg_position : news_event and show_background ? bg_news : na, title="Signal Background")
+
+// Trend Line - XAUUSD optimized
+trend_line_color = close > ama_trend ? color.green : color.red
+plot(ama_trend, color=trend_line_color, linewidth=2, title="XAUUSD Trend Line")
+
+// Support and Resistance Levels
+plot(show_support_resistance ? swing_high : na, color=color.red, style=plot.style_linebr, linewidth=1, title="Resistance")
+plot(show_support_resistance ? swing_low : na, color=color.green, style=plot.style_linebr, linewidth=1, title="Support")
+
+// VWAP
+plot(vwap_current, color=color.blue, linewidth=1, title="XAUUSD VWAP")
+
+// Bollinger Bands
+plot(bb_upper, color=color.gray, linewidth=1, title="BB Upper")
+plot(bb_middle, color=color.gray, linewidth=1, title="BB Middle")
+plot(bb_lower, color=color.gray, linewidth=1, title="BB Lower")
+
+// Position Lines - Adaptive
+plot(position_type == "LONG" ? stop_loss : na, color=color.red, style=plot.style_linebr, linewidth=2, title="Long Stop Loss")
+plot(position_type == "LONG" ? take_profit : na, color=color.green, style=plot.style_linebr, linewidth=2, title="Long Take Profit")
+plot(position_type == "SHORT" ? stop_loss : na, color=color.red, style=plot.style_linebr, linewidth=2, title="Short Stop Loss")
+plot(position_type == "SHORT" ? take_profit : na, color=color.green, style=plot.style_linebr, linewidth=2, title="Short Take Profit")
+
+// ============================================================================
+// SIGNAL LABELS AND ARROWS - XAUUSD ADAPTIVE
+// ============================================================================
+
+// Signal Size Configuration
+label_size = signal_size == "Small" ? size.small : signal_size == "Medium" ? size.normal : size.large
+
+// Entry Signals - XAUUSD Adaptive
+if long_entry_signal
+    label.new(bar_index, low - atr_14, "🥇 XAUUSD LONG\nSession: " + current_session + "\nRegime: " + market_regime + "\nEntry: " + str.tostring(close, "#.##") + "\nSL: " + str.tostring(stop_loss_long, "#.##") + "\nTP: " + str.tostring(take_profit_long, "#.##") + "\nStrength: " + str.tostring(long_strength, "#.#"), 
+              color=color.green, textcolor=color.white, style=label.style_label_up, size=label_size)
+    
+    if enable_alerts
+        alert("🥇 XAUUSD LONG - Session: " + current_session + " | Regime: " + market_regime + " | Entry: " + str.tostring(close, "#.##"), alert.freq_once_per_bar)
+
+if short_entry_signal
+    label.new(bar_index, high + atr_14, "🥇 XAUUSD SHORT\nSession: " + current_session + "\nRegime: " + market_regime + "\nEntry: " + str.tostring(close, "#.##") + "\nSL: " + str.tostring(stop_loss_short, "#.##") + "\nTP: " + str.tostring(take_profit_short, "#.##") + "\nStrength: " + str.tostring(short_strength, "#.#"), 
+              color=color.red, textcolor=color.white, style=label.style_label_down, size=label_size)
+    
+    if enable_alerts
+        alert("🥇 XAUUSD SHORT - Session: " + current_session + " | Regime: " + market_regime + " | Entry: " + str.tostring(close, "#.##"), alert.freq_once_per_bar)
+
+// Exit Signals - XAUUSD Adaptive
+if position_type == "LONG" and (close <= trailing_stop or close >= take_profit or (structure_bearish and close < swing_low) or momentum_current < -adaptive_momentum_sens * 0.7 or (news_event and current_profit_long < 0) or (rsi_overbought and current_profit_long > 0))
+    exit_reason = close <= trailing_stop ? "Stop Loss" : close >= take_profit ? "Take Profit" : (structure_bearish and close < swing_low) ? "Structure Change" : momentum_current < -adaptive_momentum_sens * 0.7 ? "Momentum Change" : news_event and current_profit_long < 0 ? "News Event" : "RSI Overbought"
+    label.new(bar_index, high + atr_14, "🔴 CLOSE XAUUSD LONG\nExit: " + str.tostring(close, "#.##") + "\nReason: " + exit_reason + "\nP&L: " + str.tostring((close - entry_price) * 100, "#") + " USD", 
+              color=color.orange, textcolor=color.white, style=label.style_label_down, size=label_size)
+    
+    if enable_alerts
+        alert("🔴 CLOSE XAUUSD LONG - Exit: " + str.tostring(close, "#.##") + " | Reason: " + exit_reason, alert.freq_once_per_bar)
+
+if position_type == "SHORT" and (close >= trailing_stop or close <= take_profit or (structure_bullish and close > swing_high) or momentum_current > adaptive_momentum_sens * 0.7 or (news_event and current_profit_short < 0) or (rsi_oversold and current_profit_short > 0))
+    exit_reason = close >= trailing_stop ? "Stop Loss" : close <= take_profit ? "Take Profit" : (structure_bullish and close > swing_high) ? "Structure Change" : momentum_current > adaptive_momentum_sens * 0.7 ? "Momentum Change" : news_event and current_profit_short < 0 ? "News Event" : "RSI Oversold"
+    label.new(bar_index, low - atr_14, "🟢 CLOSE XAUUSD SHORT\nExit: " + str.tostring(close, "#.##") + "\nReason: " + exit_reason + "\nP&L: " + str.tostring((entry_price - close) * 100, "#") + " USD", 
+              color=color.orange, textcolor=color.white, style=label.style_label_up, size=label_size)
+    
+    if enable_alerts
+        alert("🟢 CLOSE XAUUSD SHORT - Exit: " + str.tostring(close, "#.##") + " | Reason: " + exit_reason, alert.freq_once_per_bar)
+
+// ============================================================================
+// PLOT SHAPES FOR ADDITIONAL VISUAL CUES - XAUUSD ADAPTIVE
+// ============================================================================
+
+// Plot shapes for entry signals
+plotshape(long_entry_signal, style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small, title="XAUUSD Long Entry")
+plotshape(short_entry_signal, style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small, title="XAUUSD Short Entry")
+
+// Plot shapes for exit signals
+plotshape(position_type == "LONG" and (close <= trailing_stop or close >= take_profit or (structure_bearish and close < swing_low) or momentum_current < -adaptive_momentum_sens * 0.7 or (news_event and current_profit_long < 0) or (rsi_overbought and current_profit_long > 0)), style=shape.xcross, location=location.abovebar, color=color.orange, size=size.small, title="Long Exit")
+plotshape(position_type == "SHORT" and (close >= trailing_stop or close <= take_profit or (structure_bullish and close > swing_high) or momentum_current > adaptive_momentum_sens * 0.7 or (news_event and current_profit_short < 0) or (rsi_oversold and current_profit_short > 0)), style=shape.xcross, location=location.belowbar, color=color.orange, size=size.small, title="Short Exit")
+
+// Plot shapes for volatility changes
+plotshape(volatility_expanding, style=shape.circle, location=location.top, color=color.orange, size=size.tiny, title="Volatility Expanding")
+plotshape(volatility_contracting, style=shape.circle, location=location.bottom, color=color.blue, size=size.tiny, title="Volatility Contracting")
+
+// Plot shapes for news events
+plotshape(news_event, style=shape.diamond, location=location.top, color=color.red, size=size.small, title="News Event")
+
+// Plot shapes for session changes
+plotshape(current_session != current_session[1], style=shape.square, location=location.bottom, color=color.yellow, size=size.tiny, title="Session Change")
+
+// Plot shapes for RSI levels
+plotshape(rsi_overbought, style=shape.circle, location=location.top, color=color.red, size=size.tiny, title="RSI Overbought")
+plotshape(rsi_oversold, style=shape.circle, location=location.bottom, color=color.green, size=size.tiny, title="RSI Oversold")

@@ -1,0 +1,1 @@
+# TradingView_XAUUSD_PRO
